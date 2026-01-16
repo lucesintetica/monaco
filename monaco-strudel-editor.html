@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strudel Editor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #0d0d0d;
+            font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        #toolbar {
+            height: 36px;
+            background: linear-gradient(180deg, #1a1a2e 0%, #16162a 100%);
+            border-bottom: 1px solid #2a2a4a;
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            gap: 8px;
+        }
+        
+        .toolbar-btn {
+            background: linear-gradient(180deg, #3a3a6a 0%, #2a2a5a 100%);
+            border: 1px solid #4a4a8a;
+            border-radius: 4px;
+            color: #e0e0ff;
+            padding: 6px 14px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .toolbar-btn:hover {
+            background: linear-gradient(180deg, #4a4a8a 0%, #3a3a7a 100%);
+            border-color: #6a6aaa;
+        }
+        
+        .toolbar-btn.run {
+            background: linear-gradient(180deg, #2a6a4a 0%, #1a5a3a 100%);
+            border-color: #3a8a5a;
+        }
+        
+        .toolbar-btn.run:hover {
+            background: linear-gradient(180deg, #3a8a5a 0%, #2a7a4a 100%);
+        }
+        
+        .toolbar-btn.stop {
+            background: linear-gradient(180deg, #6a2a2a 0%, #5a1a1a 100%);
+            border-color: #8a3a3a;
+        }
+        
+        .toolbar-btn.stop:hover {
+            background: linear-gradient(180deg, #8a3a3a 0%, #7a2a2a 100%);
+        }
+        
+        .status {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #888;
+            font-size: 11px;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ff4444;
+            transition: background 0.3s ease;
+        }
+        
+        .status-dot.connected {
+            background: #44ff88;
+            box-shadow: 0 0 8px #44ff88;
+        }
+        
+        #editor-container {
+            height: calc(100vh - 36px);
+            width: 100%;
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #1a1a2e;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #3a3a6a;
+            border-radius: 5px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4a4a8a;
+        }
+    </style>
+</head>
+<body>
+    <div id="toolbar">
+        <button class="toolbar-btn run" onclick="sendCode()" title="Ctrl+Enter">▶ RUN</button>
+        <button class="toolbar-btn stop" onclick="stopCode()" title="Ctrl+.">■ STOP</button>
+        <button class="toolbar-btn" onclick="clearEditor()">CLEAR</button>
+        <div class="status">
+            <span id="status-text">Disconnected</span>
+            <div class="status-dot" id="status-dot"></div>
+        </div>
+    </div>
+    <div id="editor-container"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+    <script>
+        // ============================================
+        // CONFIGURATION
+        // ============================================
+        const WS_URL = 'ws://localhost:9980';
+        const RECONNECT_INTERVAL = 3000;
+        
+        // Default code
+        const DEFAULT_CODE = `// Strudel Live Coding
+// Press Ctrl+Enter to run, Ctrl+. to stop
+
+sound("bd sd:2 [~ bd] sd")
+  .speed(1)
+  .lpf(2000)
+  .room(0.5)
+`;
+
+        // ============================================
+        // STRUDEL LANGUAGE DEFINITION
+        // ============================================
+        const strudelKeywords = [
+            // Sound sources
+            'sound', 's', 'note', 'n', 'freq', 'midinote',
+            // Pattern constructors
+            'cat', 'stack', 'seq', 'fastcat', 'slowcat', 'timecat',
+            'polymeter', 'polyrhythm', 'rand', 'irand', 'choose', 'wchoose',
+            'run', 'scan', 'range', 'rangex',
+            // Time modifiers
+            'fast', 'slow', 'hurry', 'stretch', 'compress',
+            'early', 'late', 'off', 'when', 'while',
+            // Pattern modifiers
+            'rev', 'palindrome', 'every', 'almostEvery', 'almostNever',
+            'someCycles', 'sometimes', 'rarely', 'often', 'always',
+            'first', 'last', 'chunk', 'chunkBack',
+            'ply', 'striate', 'chop', 'slice', 'splice',
+            'linger', 'trunc', 'degrade', 'degradeBy',
+            'jux', 'juxBy', 'superimpose', 'layer', 'struct',
+            'mask', 'euclid', 'euclidRot', 'euclidLegato',
+            // Effects
+            'lpf', 'hpf', 'bpf', 'vowel', 'cutoff', 'resonance',
+            'gain', 'velocity', 'amp', 'pan', 'orbit',
+            'delay', 'delaytime', 'delayfeedback', 'delayfb',
+            'room', 'size', 'dry',
+            'crush', 'coarse', 'shape', 'distort',
+            'speed', 'begin', 'end', 'cut', 'loop', 'loopAt',
+            'attack', 'decay', 'sustain', 'release', 'hold',
+            'legato', 'clip',
+            // Pitch
+            'transpose', 'add', 'sub', 'mul', 'div',
+            'scale', 'scaleTranspose', 'voicing', 'rootNotes',
+            // Control
+            'cpm', 'bpm', 'setcps', 'hush', 'silence', 'reset',
+            // Utilities
+            'log', 'print', 'echo'
+        ];
+
+        const strudelSnippets = [
+            { label: 'Basic beat', insertText: 'sound("bd sd:2 [~ bd] sd")', detail: 'Classic four-on-the-floor' },
+            { label: 'Euclidean rhythm', insertText: 'sound("bd").euclid(${1:3}, ${2:8})', detail: 'Euclidean pattern' },
+            { label: 'Random melody', insertText: 'note(irand(${1:12}).add(${2:48})).sound("${3:piano}")', detail: 'Random notes' },
+            { label: 'Arpeggiate', insertText: 'note("<${1:c3 e3 g3 b3}>").sound("${2:sawtooth}").lpf(${3:1000})', detail: 'Simple arpeggio' },
+            { label: 'Stack layers', insertText: 'stack(\n  sound("bd sd:2"),\n  sound("hh*8")\n)', detail: 'Layer multiple patterns' },
+            { label: 'Effects chain', insertText: '.lpf(${1:2000}).room(${2:0.5}).delay(${3:0.25})', detail: 'Common effect chain' },
+            { label: 'Every transform', insertText: '.every(${1:4}, x => x.${2:fast(2)})', detail: 'Transform every N cycles' },
+            { label: 'Jux stereo', insertText: '.jux(x => x.${1:rev()})', detail: 'Stereo transformation' },
+        ];
+
+        // Sample names for autocompletion
+        const sampleNames = [
+            'bd', 'sd', 'hh', 'oh', 'cp', 'cb', 'rim', 'tom', 'conga', 'bongo',
+            'bass', 'bass3', 'piano', 'organ', 'rhodes', 'pad', 'string', 'brass',
+            'sine', 'saw', 'sawtooth', 'square', 'triangle', 'noise', 'pink', 'brown',
+            'casio', 'jvbass', 'superpiano', 'supersquare', 'supersaw',
+            'arpy', 'pluck', 'gtr', 'guitar', 'flute', 'arp', 'blip'
+        ];
+
+        // ============================================
+        // WEBSOCKET CONNECTION
+        // ============================================
+        let ws = null;
+        let editor = null;
+
+        function connect() {
+            try {
+                ws = new WebSocket(WS_URL);
+                
+                ws.onopen = () => {
+                    console.log('Connected to TouchDesigner');
+                    document.getElementById('status-dot').classList.add('connected');
+                    document.getElementById('status-text').textContent = 'Connected';
+                };
+                
+                ws.onclose = () => {
+                    console.log('Disconnected from TouchDesigner');
+                    document.getElementById('status-dot').classList.remove('connected');
+                    document.getElementById('status-text').textContent = 'Disconnected';
+                    // Reconnect after delay
+                    setTimeout(connect, RECONNECT_INTERVAL);
+                };
+                
+                ws.onerror = (err) => {
+                    console.error('WebSocket error:', err);
+                };
+                
+                ws.onmessage = (event) => {
+                    // Handle messages from TouchDesigner
+                    const data = event.data;
+                    if (data.startsWith('CODE:')) {
+                        editor.setValue(data.substring(5));
+                    } else if (data === 'CLEAR') {
+                        editor.setValue('');
+                    }
+                };
+            } catch (e) {
+                console.error('Connection failed:', e);
+                setTimeout(connect, RECONNECT_INTERVAL);
+            }
+        }
+
+        // ============================================
+        // EDITOR FUNCTIONS
+        // ============================================
+        function sendCode() {
+            const code = editor.getValue();
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'run',
+                    code: code
+                }));
+            } else {
+                console.warn('Not connected to TouchDesigner');
+            }
+        }
+
+        function stopCode() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'stop'
+                }));
+            }
+        }
+
+        function clearEditor() {
+            editor.setValue('');
+        }
+
+        // ============================================
+        // MONACO INITIALIZATION
+        // ============================================
+        require.config({ 
+            paths: { 
+                vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' 
+            }
+        });
+
+        require(['vs/editor/editor.main'], function() {
+            // Register Strudel as a language (based on JavaScript)
+            monaco.languages.register({ id: 'strudel' });
+            
+            // Set token provider (syntax highlighting)
+            monaco.languages.setMonarchTokensProvider('strudel', {
+                keywords: strudelKeywords,
+                samples: sampleNames,
+                
+                tokenizer: {
+                    root: [
+                        // Strudel functions (highlighted specially)
+                        [/\b(sound|s|note|n|freq)\b/, 'keyword.function'],
+                        [/\b(fast|slow|hurry|rev|jux|juxBy|every)\b/, 'keyword.modifier'],
+                        [/\b(lpf|hpf|delay|room|gain|pan|crush|shape)\b/, 'keyword.effect'],
+                        [/\b(stack|cat|seq|euclid|struct|mask)\b/, 'keyword.pattern'],
+                        
+                        // Mini-notation in strings
+                        [/"[^"]*"/, 'string.mini'],
+                        [/'[^']*'/, 'string.mini'],
+                        [/`[^`]*`/, 'string.mini'],
+                        
+                        // Numbers
+                        [/\d+(\.\d+)?/, 'number'],
+                        
+                        // Comments
+                        [/\/\/.*$/, 'comment'],
+                        [/\/\*/, 'comment', '@comment'],
+                        
+                        // Operators
+                        [/[=><!~?:&|+\-*\/\^%]+/, 'operator'],
+                        
+                        // Method chaining dot
+                        [/\./, 'delimiter'],
+                        
+                        // Brackets
+                        [/[\[\]{}()]/, 'bracket'],
+                        
+                        // Identifiers
+                        [/[a-zA-Z_]\w*/, {
+                            cases: {
+                                '@keywords': 'keyword',
+                                '@default': 'identifier'
+                            }
+                        }]
+                    ],
+                    comment: [
+                        [/[^\/*]+/, 'comment'],
+                        [/\*\//, 'comment', '@pop'],
+                        [/[\/*]/, 'comment']
+                    ]
+                }
+            });
+
+            // Define theme colors
+            monaco.editor.defineTheme('strudel-dark', {
+                base: 'vs-dark',
+                inherit: true,
+                rules: [
+                    { token: 'keyword.function', foreground: 'ff79c6', fontStyle: 'bold' },
+                    { token: 'keyword.modifier', foreground: '8be9fd' },
+                    { token: 'keyword.effect', foreground: '50fa7b' },
+                    { token: 'keyword.pattern', foreground: 'ffb86c' },
+                    { token: 'keyword', foreground: 'ff79c6' },
+                    { token: 'string.mini', foreground: 'f1fa8c' },
+                    { token: 'number', foreground: 'bd93f9' },
+                    { token: 'comment', foreground: '6272a4', fontStyle: 'italic' },
+                    { token: 'operator', foreground: 'ff79c6' },
+                    { token: 'bracket', foreground: 'f8f8f2' },
+                    { token: 'identifier', foreground: 'f8f8f2' },
+                    { token: 'delimiter', foreground: 'ff79c6' },
+                ],
+                colors: {
+                    'editor.background': '#0d0d0d',
+                    'editor.foreground': '#f8f8f2',
+                    'editorCursor.foreground': '#ff79c6',
+                    'editor.lineHighlightBackground': '#1a1a2e',
+                    'editor.selectionBackground': '#44475a',
+                    'editorLineNumber.foreground': '#4a4a6a',
+                    'editorLineNumber.activeForeground': '#ff79c6',
+                    'editorIndentGuide.background': '#2a2a4a',
+                    'editorIndentGuide.activeBackground': '#4a4a8a',
+                }
+            });
+
+            // Register autocompletion provider
+            monaco.languages.registerCompletionItemProvider('strudel', {
+                provideCompletionItems: function(model, position) {
+                    const word = model.getWordUntilPosition(position);
+                    const range = {
+                        startLineNumber: position.lineNumber,
+                        endLineNumber: position.lineNumber,
+                        startColumn: word.startColumn,
+                        endColumn: word.endColumn
+                    };
+
+                    const suggestions = [];
+                    
+                    // Add Strudel functions
+                    strudelKeywords.forEach(kw => {
+                        suggestions.push({
+                            label: kw,
+                            kind: monaco.languages.CompletionItemKind.Function,
+                            insertText: kw + (kw.match(/^(sound|s|note|n|freq|cat|stack|seq)$/) ? '($0)' : ''),
+                            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                            documentation: `Strudel function: ${kw}`,
+                            range: range
+                        });
+                    });
+                    
+                    // Add sample names
+                    sampleNames.forEach(sample => {
+                        suggestions.push({
+                            label: sample,
+                            kind: monaco.languages.CompletionItemKind.Value,
+                            insertText: sample,
+                            documentation: `Sample: ${sample}`,
+                            range: range
+                        });
+                    });
+                    
+                    // Add snippets
+                    strudelSnippets.forEach(snip => {
+                        suggestions.push({
+                            label: snip.label,
+                            kind: monaco.languages.CompletionItemKind.Snippet,
+                            insertText: snip.insertText,
+                            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                            documentation: snip.detail,
+                            range: range
+                        });
+                    });
+
+                    return { suggestions: suggestions };
+                }
+            });
+
+            // Create the editor
+            editor = monaco.editor.create(document.getElementById('editor-container'), {
+                value: DEFAULT_CODE,
+                language: 'strudel',
+                theme: 'strudel-dark',
+                fontSize: 16,
+                fontFamily: "'JetBrains Mono', 'Fira Code', 'Consolas', monospace",
+                fontLigatures: true,
+                lineNumbers: 'on',
+                minimap: { enabled: false },
+                automaticLayout: true,
+                scrollBeyondLastLine: false,
+                wordWrap: 'on',
+                tabSize: 2,
+                insertSpaces: true,
+                cursorBlinking: 'smooth',
+                cursorSmoothCaretAnimation: 'on',
+                smoothScrolling: true,
+                padding: { top: 16, bottom: 16 },
+                renderLineHighlight: 'all',
+                bracketPairColorization: { enabled: true },
+                suggest: {
+                    showKeywords: true,
+                    showSnippets: true,
+                    showFunctions: true
+                }
+            });
+
+            // Keyboard shortcuts
+            editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, sendCode);
+            editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Period, stopCode);
+            
+            // Also support Shift+Enter for run
+            editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Enter, sendCode);
+
+            // Focus editor
+            editor.focus();
+
+            // Connect to TouchDesigner
+            connect();
+        });
+    </script>
+</body>
+</html>
